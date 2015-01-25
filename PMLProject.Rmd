@@ -1,0 +1,106 @@
+---
+title: 'Practical Machine Learning: Course Project'
+output:
+  html_document:
+    theme: spacelab
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(caret); library(matrixStats); library(plyr); library(gbm); library(corrplot); library(RRF); library(e1071); library(randomForest); library(party); library(doParallel)
+setwd("C:\\Users\\ad\\Documents\\R\\kaggle\\ML")
+library(doParallel)
+registerDoParallel(3)
+
+```
+
+```{r setup, include=FALSE,echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+##Introduction 
+
+The .csvs have been read in as train and test and the required packages have been loaded as well. The primary goal of this project is to find a model that reliably predicts which movement state a person is in based on measurements of a number of gyros and magnetometers. Using as few variables as possible to create the model is the secondary goal of this exercise. 
+
+
+Because there many of the variables either contain summary statistics or NA values, we'll have to start by sanitising the data set. For that purpose, all columns with more than 20% NA values are removed. Additionally, variables that have no actual predictive function that's transferable on a new dataset are being omitted as well. 
+
+##Loading and Cleaning the Data
+```{r, warning=FALSE}
+train <- read.csv("pml-training.csv", na.strings=c("",".","NA","#DIV/0!")) #There are lots of NA values in the dataset
+test <- read.csv("pml-testing.csv")
+
+#Removes columns with more than 20% NA values. 
+remove <- sapply(colnames(train), function(x) if(sum(is.na(train[, x])) > 0.2*nrow(train)){return(T)}else{return(F)})
+train <- train[, !remove]
+train <- train[-c(1,2,3,4,5,6,7)]
+
+#The training set is now split further to allow for more reliable model testing
+inTrain <- createDataPartition(train$classe, p=0.7, list=FALSE)
+train1 <- data.frame(train[inTrain, ])
+test1 <- data.frame(train[-inTrain, ])
+```
+
+##Feature Selection
+
+Feature selection was tricky. While it would definitely be possible to use all of the remaining variables to derive the model, a goal of this project is to find the best model with the least possible predictors. Thus, a form of feature selection is required. I have decided to automate this step by pre-selecting features according to importance as determined by a random forest output. I will be using the RRF packet here, as it can directly put a featureset out.
+
+```{r, message=FALSE, warning=FALSE}
+temp <- dim(train1)[c(2)]
+rf.imp1 <- RRF(train1[-c(temp)],train1$classe, flagReg=1, feaIni=1)
+
+#RRF outputs a featureset based on an importance index, which is what I'm going to use to subset the training test. 
+set1 <- c(temp, rf.imp1$feaSet)
+
+#Subsetting the data-set to include only the selected features
+set1 <- subset(train1, select = c(set1))
+colnames(set1)
+```
+
+RRF selected 34 predictors for the first model. As that's still quite a computationally intensive number, I am going to use the importance matrix that was just generated to regularise importance for a second, more strict, set. This should  help reduce the featureset further. 
+
+```{r, warning=F, message=F}
+imp <- rf.imp1$importance/(max(rf.imp1$importance)); gamma <- .45; coefReg <- (1-gamma)+gamma*imp 
+rf.imp2 <- RRF(train1[-c(temp)],train1$classe,coefReg=coefReg, flagReg=1, nTree= 50)
+subsetRRF2 <- c(temp, rf.imp2$feaSet)
+
+set2 <- subset(train1, select = c(subsetRRF2))
+colnames(set2)
+```
+
+The second featureset consists of only 11 predictors, which would be preferable as it will reduce the processing cost by quite a lot. The requirement is, however, that the model still performs very well. 
+
+##Model training and evaluation
+
+To evaluate the performance of the model, a random forest with a 10 fold cross-validation is being used via Caret. 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#Caret RF with 10-fold CV
+#model1 <- train(classe ~ ., method = "rf", data = set1, trControl = trainControl(method = "cv", number = 10, repeats=5))
+#model1
+
+#This model achieves an expected accuracy of 99.3%, with the out-of-sample accuracy being marginally slower. This means #that we'd expect this model  to perform the prediction task very well. However, computation--especially with cross#-validation--takes a long time, so I will test how a model based on the minimal feature set performs next. 
+```
+
+```{r}
+model2 <- train(classe ~ ., method = "rf", data = set2, trControl = trainControl(method = "cv", number = 10, repeats=5))
+model2
+```
+
+This model achieves an expected accuracy of 99% and a Kappa value of 98.8%. Both of these values are excellent, which is why this model will be chosen for the prediction task. In this case, it seems like high accuracy is achievable even with a low number of actual predictors. 
+
+##Prediction
+
+First, a confusion matrix for the test set is created and then the prediction values are being written into the final set. 
+
+```{r}
+prediction <- predict(model2, test1); confusionMatrix(prediction,test1$classe)
+
+#Final prediction
+test$classe <- predict(model2, test)
+```
+
+```{r}
+write.csv(test, "test_prediction.csv")
+```
+
+Submitting the generated answers, showed that the expected accuracy was indeed quite reliably, as all of the predicted results were correct.
